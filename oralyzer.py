@@ -89,7 +89,7 @@ def check(page_var, final_url, payload='http://www.google.com'):
                 result_dict['redirects'].append({'url': final_url, 'redirected_to': page_var.headers['Location']})
 
             # result_dict['redirects'].append({'url': final_url, 'redirected_to': page_var.headers['Location']})
-            print(f'Header Based Redirection: {final_url} -> {page_var.headers['Location']}')
+            print(f"Header Based Redirection: {final_url} -> {page_var.headers['Location']}")
 
     elif page_var.status_code == 200:
         if 'found' not in result_dict and location or href:

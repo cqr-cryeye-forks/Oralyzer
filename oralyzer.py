@@ -1,206 +1,331 @@
 #!/usr/bin/env python3
-#https://twitter.com/r0075h3ll
-print('''\033[92m   ____           __
-  / __ \_______ _/ /_ _____ ___ ____
- / /_/ / __/ _ `/ / // /_ // -_) __/
- \____/_/  \_,_/_/\_, //__/\__/_/
-                 /___/
-\033[00m''')
-arrow = '\033[91m➤\033[00m'
-#----------------------------------------------------------#
+import json
+import random
+import ssl
 import sys
-if sys.version_info.major > 2 and sys.version_info.minor > 6:
-    pass
-else:
-    print("%s Oralyzer requires atleast Python 3.7.x to run." % bad)
-    exit()
-#---------------------------------------------------------#
-import argparse,re,random,warnings,ssl,requests
-from core.wayback import get_urls
-from core.crlf import CrlfScan
-from core.others import good,bad,info,requester,multitest,urlparse
-from bs4 import BeautifulSoup
-warnings.filterwarnings('ignore')
-ssl._create_default_https_context = ssl._create_unverified_context
-#----------------------------------------------------------------------------------#
-parser = argparse.ArgumentParser()
-parser.add_argument('-u', '--url', help='scan single target', dest="url")
-parser.add_argument('-l', '--list', help='scan multiple target', dest='path')
-parser.add_argument('-crlf', help='scan for CRLF Injection', action='store_true', dest='crlf')
-parser.add_argument('-p', '--payload', help='use payloads from a file', dest='payload')
-parser.add_argument('--proxy', help='use proxy', action='store_true' , dest='proxy')
-parser.add_argument('--wayback', help='fetch URLs from archive.org', action="store_true", dest='waybacks')
-args = parser.parse_args()
-url = args.url
-path = args.path
-proxy = args.proxy
-#-------------------------------------------------------#
-if args.url==None and args.path==None:
-    print('Made by \033[97mr0075h3ll\033[00m')
-    parser.print_help()
-    exit()
-#--------------------------------------------------------#
-if args.payload:
-    FilePath = args.payload
-    file = open(FilePath, encoding='utf-8').read().splitlines()
-else:
-    try:
-        FilePath = 'payloads.txt'
-        file = open(FilePath, encoding='utf-8').read().splitlines()
-    except FileNotFoundError:
-        print("%s Payload file not found! Try using '-p' flag to use payload file of your choice" % bad)
-        exit()
+import warnings
 
-if args.path:
-    UrlList = open(path, encoding='utf-8').read().splitlines()
-#-------------------------------------------------------#
-def analyze(url):
+import requests
+from bs4 import BeautifulSoup
+
+from args import init_args
+from constants import result_dict
+from core.crlf import crlf_scan
+from core.others import requester, multitest, urlparse
+from core.wayback import get_urls
+
+
+def analyze(url, file):
     if urlparse(url).scheme == '':
         url = 'http://' + url
-    global MultiTest
-    MultiTest = multitest(url,FilePath)
+    # global multi_test
+    multi_test = multitest(url, file)
 
-    print('%s Infusing payloads' % info)
-    if type(MultiTest) is tuple:
-        for params in MultiTest[0]:
-            TestingBreak = request(MultiTest[1],params)
-            if TestingBreak:
+    print('Infusing payloads')
+    if isinstance(multi_test, tuple):
+        for params in multi_test[0]:
+            testing_break = request(url=multi_test[1], params=params, file=file)
+
+            if testing_break:
                 break
     else:
-        for url in MultiTest:
-            TestingBreak = request(url)
-            if TestingBreak:
+        for url in multi_test:
+            testing_break = request(url=url, file=file)
+            if testing_break:
                 break
-#--------------------------------------------------------#
-def request(uri,params='',PayloadIndex=0):
+
+
+def request(url, file, proxy='', params='', payload_index=0):
     skip = 1
-    if args.proxy:
+    if proxy:
         try:
-            page = requester(uri,True,params)
+            page = requester(url, True, params)
         except requests.exceptions.Timeout:
-            print("[\033[91mTimeout\033[00m] %s" % url)
+            print(f"Timeout {url}")
             return skip
         except requests.exceptions.ConnectionError:
-            print("%s Connection Error" % bad)
+            print("Connection Error")
             return skip
     else:
         try:
-            page = requester(uri,False,params)
+            page = requester(url, False, params)
         except requests.exceptions.Timeout:
-            print("[\033[91mTimeout\033[00m] %s" % url)
+            print(f"Timeout {url}")
             return skip
         except requests.exceptions.ConnectionError:
-            print("%s Connection Error" % bad)
+            print(f"Connection Error {url}")
             return skip
         except IndexError:
-            PayloadIndex = 0
+            payload_index = 0
 
-    function_break = check(page,page.request.url,file[PayloadIndex])
-    PayloadIndex += 1
+    function_break = check(page, page.request.url, file[payload_index])
+    payload_index += 1
     if function_break:
-        return skip                
-#--------------------------------------------------------------------#
-def check(PageVar,FinalUrl,payload='http://www.google.com'):
+        return skip
+
+
+def check(page_var, final_url, payload='http://www.google.com'):
     skip = 1
-    RedirectCodes = [i for i in range(300,311,1)]
-    soup = BeautifulSoup(PageVar.text,'html.parser')
+    redirect_codes = [i for i in range(300, 311, 1)]
+    soup = BeautifulSoup(page_var.text, 'html.parser')
     location = 'window.location' in str(soup.find_all('script'))
     href = 'location.href' in str(soup.find_all('script'))
     google = payload in str(soup.find_all('script'))
     metas = str(soup.find_all('meta'))
     meta_tag_search = payload in metas
-#----------------------------------------------------------------------------------------------#
-    if PageVar.status_code in RedirectCodes:
-        if meta_tag_search and "http-equiv=\"refresh\"" in metas:
-            print("%s Meta Tag Redirection" % good)
-            return skip
-            
-        else:
-            print("%s Header Based Redirection : %s %s  \033[92m%s\033[00m" % (good, FinalUrl, arrow,PageVar.headers['Location']))
 
-    elif PageVar.status_code==200:
+    if page_var.status_code in redirect_codes:
+        if meta_tag_search and "http-equiv=\"refresh\"" in metas:
+            # TODO: maybe need to add it to dict?
+            print("Meta Tag Redirection")
+            return skip
+
+        else:
+            if 'redirects' not in result_dict:
+                result_dict['redirects'] = []
+
+            # Check if the URL is not already in the 'redirects' list
+            if not any(entry['url'] == final_url for entry in result_dict['redirects']):
+                result_dict['redirects'].append({'url': final_url, 'redirected_to': page_var.headers['Location']})
+
+            # result_dict['redirects'].append({'url': final_url, 'redirected_to': page_var.headers['Location']})
+            print(f'Header Based Redirection: {final_url} -> {page_var.headers['Location']}')
+
+    elif page_var.status_code == 200:
+        if 'found' not in result_dict and location or href:
+            result_dict['found'] = []
+
         if google:
-#---------------------------------------------------------------------------------------------_#
-            print("%s Javascript Based Redirection" % good)
+
+            print("Javascript Based Redirection")
             if location and href:
-                print("%s Vulnerable Source Found: \033[1mwindow.location\033[00m" % good)
-                print("%s Vulnerable Source Found: \033[1mlocation.href\033[00m" % good)
+                print(f"Vulnerable Source Found: {location} -> \033[1mwindow.location\033[00m")
+                print(f"Vulnerable Source Found: {href} .> \033[1mlocation.href\033[00m")
+
+                if not any(entry['url'] == final_url for entry in result_dict['found']):
+                    result_dict['found'].append(
+                        {
+                            'url': final_url,
+                            'status_code': 200,
+                            'vulnerable': True,
+                            'href': href,
+                            'location': location,
+                            'info': 'Javascript Based Redirection.\n'
+                                    'Try fuzzing the URL for DOM XSS',
+                        }
+                    )
+
             elif href:
-                print("%s Vulnerable Source Found: \033[1mlocation.href\033[00m" % good)
+                print(f"Vulnerable Source Found: {href} -> \033[1mlocation.href\033[00m")
+
+                if not any(entry['url'] == final_url for entry in result_dict['found']):
+                    result_dict['found'].append(
+                        {
+                            'url': final_url,
+                            'status_code': 200,
+                            'vulnerable': True,
+                            'href': href,
+                            'info': 'Javascript Based Redirection.\n'
+                                    'Try fuzzing the URL for DOM XSS',
+                        }
+                    )
+
             elif location:
-                print("%s Vulnerable Source Found: \033[1mwindow.location\033[00m" % good)
-            print("%s Try fuzzing the URL for DOM XSS" % info)
+                print(f"Vulnerable Source Found: {location} -> \033[1mwindow.location\033[00m")
+
+                if not any(entry['url'] == final_url for entry in result_dict['found']):
+                    result_dict['found'].append(
+                        {
+                            'url': final_url,
+                            'status_code': 200,
+                            'vulnerable': True,
+                            'location': location,
+                            'info': 'Javascript Based Redirection.\n'
+                                    'Try fuzzing the URL for DOM XSS',
+                        }
+                    )
+
+            print("Try fuzzing the URL for DOM XSS")
             return skip
 
         elif location:
             if 'window.location = {}'.format(payload):
-                print("%s Vulnerable Source Found: \033[1mwindow.location\033[00m" % good)
-                print("%s Try fuzzing the URL for DOM XSS" % info)
+                print(payload, ' - it\'s a payload, however saving location. In next row: ')
+                print(f"Vulnerable Source Found: {location} -> \033[1mwindow.location\033[00m")
+                print("Try fuzzing the URL for DOM XSS")
+
+                if not any(entry['url'] == final_url for entry in result_dict['found']):
+                    result_dict['found'].append(
+                        {
+                            'url': final_url,
+                            'status_code': 200,
+                            'vulnerable': True,
+                            'location': location,
+                            'info': 'Try fuzzing the URL for DOM XSS',
+                        }
+                    )
+
                 return skip
             else:
                 print("%s Potentially Vulnerable Source Found: \033[1mwindow.location\033[00m")
-#------------------------------------------------------------------------------------#
-        if meta_tag_search and "http-equiv=\"refresh\"" in str(PageVar.text):
-            print("%s Meta Tag Redirection" % good)
+
+                if not any(entry['url'] == final_url for entry in result_dict['found']):
+                    result_dict['found'].append(
+                        {
+                            'url': final_url,
+                            'status_code': 200,
+                            'vulnerable': True,
+                            'location': location,
+                            'info': 'Potentially Vulnerable Source',
+                        }
+                    )
+        # else:
+        #     print(f"{final_url} not vulnerable, but 200")
+        #
+        #     if not any(entry['url'] == final_url for entry in result_dict['found']):
+        #         result_dict['found'].append(
+        #             {
+        #                 'url': final_url,
+        #                 'status_code': 200,
+        #                 'vulnerable': False,
+        #             }
+        #         )
+
+        if meta_tag_search and "http-equiv=\"refresh\"" in str(page_var.text):
+            print("Meta Tag Redirection")
+
+            # if 'redirects' not in result_dict:
+            #     result_dict['redirects'] = []
+
+            if not any(entry['url'] == final_url for entry in result_dict['found']):
+                result_dict['found'].append(
+                    {
+                        'url': final_url,
+                        'status_code': 200,
+                        'vulnerable': False,
+                        'info': 'Meta Tag Redirection.',
+                    }
+                )
+
             return skip
 
-        elif "http-equiv=\"refresh\"" in str(PageVar.text) and not meta_tag_search:
-            print("%s The page is only getting refreshed" % bad)
+        elif "http-equiv=\"refresh\"" in str(page_var.text) and not meta_tag_search:
+            print("The page is only getting refreshed")
+
+            if not any(entry['url'] == final_url for entry in result_dict['found']):
+                result_dict['found'].append(
+                    {
+                        'url': final_url,
+                        'status_code': 200,
+                        'vulnerable': False,
+                        'info': 'The page is only getting refreshed.',
+                    }
+                )
+
             return skip
 
-#-------------------------------------------------------------------------------------#
-    elif PageVar.status_code==404:
-        print("%s %s [\033[91m404\033[00m]" % (bad,FinalUrl))
-    elif PageVar.status_code==403:
-        print("%s %s [\033[91m403\033[00m]" % (bad,FinalUrl))
-    elif PageVar.status_code==400:
-        print("%s %s [\033[91m400\033[00m]" % (bad,FinalUrl))
+    # elif page_var.status_code == 404:
+    #     print(f"{final_url} status {page_var.status_code}")
+    # elif page_var.status_code == 403:
+    #     print(f"{final_url} status {page_var.status_code}")
+    # elif page_var.status_code == 400:
+    #     print(f"{final_url} status {page_var.status_code}")
 
     else:
-        print("%s Found nothing :: %s" % (bad,FinalUrl))
+        if 'not_found' not in result_dict:
+            result_dict['not_found'] = []
 
-#-------------------------------------------------------------------------------------------------------------------------------#
-try:
-    if args.waybacks==False and args.crlf==False and args.url:
-        analyze(url)
+        if not any(entry['url'] == final_url for entry in result_dict['not_found']):
+            result_dict['not_found'].append({'url': final_url, 'status_code': page_var.status_code})
 
-    elif args.crlf:
-        if args.proxy and args.path:
-            for url in UrlList:
-                print("%s Target: \033[92m%s\033[00m" % (info, url))
-                CrlfScan(url,True)
-                print(80*"\033[97m—\033[00m")
-        elif args.proxy and not args.path:
-            CrlfScan(url,True)
+        print(f"{final_url} {page_var.status_code}")
 
-        elif args.path and not args.proxy:
-            for url in UrlList:
-                print("%s Target: \033[92m%s\033[00m" % (info, url))
-                CrlfScan(url,False)
-                print(80*"\033[97m—\033[00m")
+
+def main():
+    if sys.version_info.major > 2 and sys.version_info.minor > 6:
+        pass
+    else:
+        print("Oralyzer requires at least Python 3.7.x to run.")
+        exit()
+
+    warnings.filterwarnings('ignore')
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+    args = init_args()
+
+    url = args.url
+    path = args.path
+    proxy = args.proxy
+    output_file = args.output_file
+
+    if not args.url and not args.path:
+        print('Made by \033[97mr0075h3ll\033[00m')
+        print('You wrote wrong arguments.')
+        exit()
+
+    if args.payload:
+        file_path = args.payload
+        file = open(file_path, encoding='utf-8').read().splitlines()
+    else:
+        try:
+            file_path = 'payloads.txt'
+            file = open(file_path, encoding='utf-8').read().splitlines()
+        except FileNotFoundError:
+            print("Payload file not found! Try using '-p' flag to use payload file of your choice")
+            exit()
+
+    if args.path:
+        url_list = open(path, encoding='utf-8').read().splitlines()
+
+    try:
+        if not args.waybacks and not args.crlf and args.url:
+            analyze(url=url, file=file)
+
+        elif args.crlf:
+            if args.proxy and args.path:
+                for url in url_list:
+                    print(f"Target {url}")
+                    crlf_scan(url=url, foxy=True)
+                    print("__")
+            elif args.proxy and not args.path:
+                crlf_scan(url=url, foxy=True)
+
+            elif args.path and not args.proxy:
+                for url in url_list:
+                    print(f"Target {url}")
+                    crlf_scan(url=url, foxy=False)
+                    print("__")
+            else:
+                crlf_scan(url=url, foxy=False)
+
+        elif not args.waybacks and args.path:
+            for url in url_list:
+                print(f"Target {url}")
+                analyze(url=url, file=file)
+                print("__")
+
+        elif args.url and args.waybacks:
+            print("Getting juicy URLs with \033[1m\033[93mwaybackurls\033[00m\033[00m")
+            get_urls(url, "wayback_urls.txt")
+
+        elif args.path and args.waybacks:
+            print("Getting juicy URLs with \033[93mwaybackurls\033[00m")
+            for url in url_list:
+                print(f"Target: {url}")
+                get_urls(url=url, path="wayback_{}.txt".format(random.randint(0, 100)))
+                print("__")
+
         else:
-            CrlfScan(url,False)
+            print("Filename not specified")
 
-    elif args.waybacks==False and args.path:
-        for url in UrlList:
-            print("%s Target: \033[92m%s\033[00m" % (info, url))
-            analyze(url)
-            print(80*"\033[97m—\033[00m")
+    except KeyboardInterrupt:
+        print("Quitting...")
+        exit()
 
-    elif args.url and args.waybacks:
-        print("%s Getting juicy URLs with \033[1m\033[93mwaybackurls\033[00m\033[00m" % info)
-        get_urls(url, "wayback_urls.txt")
+    json_data = json.dumps(result_dict)
+    output_file.write_text(json_data)
+    print(f"Final results save to {output_file.absolute().as_uri()}")
 
-    elif args.path and args.waybacks:
-        print("%s Getting juicy URLs with \033[93mwaybackurls\033[00m" % info)
-        for url in UrlList:
-            print("%s Target: \033[92m%s\033[00m" % (info, url))
-            get_urls(url, "wayback_{}.txt".format(random.randint(0,100)))
-            print(80*"\033[97m—\033[00m")
 
-    else:
-        print("%s Filename not specified" % bad)
-
-except KeyboardInterrupt:
-    print("\n\033[91mQuitting...\033[00m")
-    exit()
+if __name__ == '__main__':
+    main()
